@@ -5,6 +5,7 @@
 //  Created by alwi husada on 11/30/16.
 //  Copyright © 2016 alwi husada. All rights reserved.
 //
+
 #include <iostream>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -24,19 +25,23 @@ using namespace cv;
 
 struct cv_params
 {
-    const vector<float> Sc = {4,4};
-    const float alpha      = 0.3;
-    const double tau1      = 1;
-    const double tau2      = 3;
-    const double delta     = 0.03;
-    const int dataType     = 0;
-//    vector<float> Sc     = {3,3};
-//    float alpha          = 0.5;
-//    const double tau1    = 0.5;
-//    const double tau2    = 0.5;
-//    const double delta   = 0.02;
-//    const int dataType   = 2;
-    const int numLabel     = 2;
+    /* Parameters for syntatic Datasets */
+//    const vector<float> Sc = {4,4};
+//    const float alpha      = 0.3;
+//    const double tau1      = 1;
+//    const double tau2      = 3;
+//    const double delta     = 0.03;
+//    const int dataType     = 1;
+    
+    /* Parameters for Lytro Datasets (ie. Flowers)*/
+    vector<float> Sc     = {3,3};
+    float alpha          = 0.5;
+    const double tau1    = 0.5;
+    const double tau2    = 0.5;
+    const double delta   = 0.02;
+    const int dataType   = 2;
+    
+    const int numLabel   = 75;
     const vector<float> kernel = {1,1};
 } cv_param;
 
@@ -79,7 +84,7 @@ static void meshgrid(const Mat1d &xgv, const Mat1d &ygv, Mat1d &X, Mat1d &Y)
     cv::repeat(ygv.reshape(1,1).t(), 1, xgv.total(), Y);
 }
 
-/***************************************************** Pre-PROCESSING **************************************************/
+/********************************** Pre-PROCESSING generate Light field images **************************************/
 vector< vector<Mat> > make4dLight(string path_images , string ext)
 {
     Mat src;
@@ -110,19 +115,19 @@ void viewLightField (vector< vector<Mat> > LF)
     for (int i = 0 ; i < sz ; i++){
         for (int j =0 ; j < sz ; j++) {
             img = LF[i][j];
-            //TODO : save img as bigimg
-            //img.copyTo(resultImg(Range(),Range()));
-            //bigimg(arma::span(ts,te), arma::span(ss,se))= img;
             namedWindow( "Display window", WINDOW_AUTOSIZE );// Create a window for display.
             imshow( "Figure 1", img );
             waitKey(80);
         }
     }
-    // imshow("big Image",resultImg);
-    //waitKey(0);
 }
 
-/***************************************************** COST VOLUME **************************************************/
+/********************************** COST VOLUME ***********************************
+% 2015.05.12 Hae-Gon Jeon
+% Accurate Depth Map Estimation from a Lenslet Light Field Camera
+% CVPR 2015
+***********************************************************************************/
+
 void swapQuadrant(Mat magI)
 {
     magI = magI(Rect(0, 0, magI.cols & -2, magI.rows & -2)); // crop if it has an odd number of rows or columns
@@ -209,15 +214,12 @@ Mat pixel_shift(Mat fft2,Mat src, vector<double> delta, int mode)
     }
     split(complexI, planes);
     magnitude(planes[0], planes[1], complexI);
-
     if (mode == 0) {
         cv::max(complexI, 0.00, complexI);
         cv::min(complexI, 1.00, complexI);
     }
-    
     //    Mat ret_val;
     //    complexI(Range(0, complexI.rows - (m - src.rows)), Range(0, complexI.cols-(n - src.rows))).copyTo(ret_val);
-    
     return complexI;
 }
 
@@ -275,7 +277,6 @@ vector< Mat > costVolume(vector< vector<Mat> > LF, cv_params &param)
             if (Sc[0] == i && Sc[1] == j){
                 continue;
             }
-            
             vector<int> ind = {j,i};
             vector<int> flags = {i,j};
             vector<double> vn ;
@@ -306,8 +307,10 @@ vector< Mat > costVolume(vector< vector<Mat> > LF, cv_params &param)
             double beta = abs(vn[0])/ (abs(vn[0])+ abs(vn[1]));
             for (int cn = 1; cn <= numLabel; cn++) {
                 if (dataType==0) {
+                    deltarc = { -delta*vn[0]*((double)cn - (double)numLabel/2), delta*vn[1]*((double)cn - (double)numLabel/2)};
+                } else if (dataType==1){
                     deltarc = { -delta*vn[0]*((double)cn - (double)numLabel/2), -delta*vn[1]*((double)cn - (double)numLabel/2)};
-                }else {
+                } else {
                     deltarc = { -delta*vn[0]*(double)cn, -delta*vn[1]*(double)cn};
                 }
                 // ++++++++++++++ ORIGINAL image DFT +++++++++++++++++++++++++++++++++++++++++
@@ -367,10 +370,22 @@ vector< Mat > costVolume(vector< vector<Mat> > LF, cv_params &param)
     return cost_result;
 }
 
-/***************************************************** COST AGGREGATION ********************************************/
+/************************************* COST AGGREGATION *******************************************
+  C Rhemann et al.,
+  Fast cost-volume filtering for visual correspondence and beyond
+  CVPR 2011
+**************************************************************************************************/
+
+/*
+ * Domain Transform Filter (RF)
+ * Recursive Filter : (http://inf.ufrgs.br/~eslgastal/DomainTransform/ )
+ *
+ * Eduardo SL Gastal and Manuel M Oliveira. Domain transform for edge-aware image and video
+ * processing. In ACM Transactions on Graphics (ToG), volume 30, page 69. ACM, 2011.
+ *
+ */
 Mat  transformedDomain_recursive_f(Mat &I, Mat img, double sigma)
 {
-
     double a = exp(-sqrt(2) / sigma);
     Mat V = Mat(img.rows, img.cols, img.type());
     for (int i =0; i< img.rows; i ++){
@@ -378,23 +393,17 @@ Mat  transformedDomain_recursive_f(Mat &I, Mat img, double sigma)
             V.at<double>(i,j) = pow(a, img.at<double>(i,j));
         }
     }
-
     for (int i= 1; i < I.cols; i++){
-
         I.col(i) =  I.col(i) + V.col(i).mul( (I.col(i-1) - I.col(i)));
     }
-
     for (int width = I.cols -2; width >= 0; width--){
-        
         I.col(width) =  I.col(width) + V.col(width+1).mul((I.col(width+1) - I.col(width)));
     }
-    
     return I;
 }
 
 Mat domain_transform_f(const Mat &I, double sigma_s, double sigma_r,int num_iter, Mat im_joint)
 {
-    
     Mat im = I.clone();
     Mat hor_0 = im_joint.colRange(0, im_joint.cols-1 ).clone();
     Mat hor_1 = im_joint.colRange(1, im_joint.cols ).clone();
@@ -430,9 +439,27 @@ Mat domain_transform_f(const Mat &I, double sigma_s, double sigma_r,int num_iter
         transformedDomain_recursive_f(im, dVdy, sigma_H_i);
         transpose(im, im);
     }
-    
     return im;
 }
+
+/*
+ * Guided Filter
+ * Modified from this implementation: ( https://github.com/atilimcetin/guided-filter )
+ */
+class GuidedF
+{
+public:
+    GuidedF(Mat &guide_im, double eps, int r);
+    Mat filter(const Mat &p)const;
+    
+private:
+    float eps;
+    int r;
+    Mat N;
+    Mat invrr, invrg,  invrb, invgg, invgb, invbb;
+    Mat mean_I_r,  mean_I_g, mean_I_b;
+    vector<Mat> Ichannels;
+};
 
 static Mat box_filter(Mat mat_src, double r)
 {
@@ -451,21 +478,6 @@ static Mat box_filter(Mat mat_src, double r)
     mat_src = convarma2cv(imDst).clone();
     return mat_src;
 }
-
-class GuidedF
-{
-public:
-    GuidedF(Mat &guide_im, double eps, int r);
-    Mat filter(const Mat &p)const;
-    
-private:
-    float eps;
-    int r;
-    Mat N;
-    Mat invrr, invrg,  invrb, invgg, invgb, invbb;
-    Mat mean_I_r,  mean_I_g, mean_I_b;
-    vector<Mat> Ichannels;
-};
 
 GuidedF::GuidedF(Mat &guide_im, double eps, int r):eps(eps),r(r)
 {
@@ -491,7 +503,6 @@ GuidedF::GuidedF(Mat &guide_im, double eps, int r):eps(eps),r(r)
     Mat var_I_gb = box_filter(Ichannels[1].mul(Ichannels[2]), r)/N - mean_I_g.mul(mean_I_b);
     Mat var_I_bb = box_filter(Ichannels[2].mul(Ichannels[2]), r)/N - mean_I_b.mul(mean_I_b) + eps;
     
-    
     // Inverse of Sigma + eps * I
     invrr = var_I_gg.mul(var_I_bb) - var_I_gb.mul(var_I_gb);
     invrg = var_I_gb.mul(var_I_rb) - var_I_rg.mul(var_I_bb);
@@ -515,8 +526,6 @@ Mat GuidedF::filter(const Mat &p)const
     Mat dispI;
     p.convertTo(dispI,Ichannels[0].type() );
     
-//    cout << dispI <<endl;
-//    cout << N <<endl;
     Mat mean_p = box_filter(dispI, r)/N;
     
     Mat mean_Ip_r = box_filter(Ichannels[0].mul(dispI), r)/N;
@@ -534,7 +543,6 @@ Mat GuidedF::filter(const Mat &p)const
     
     Mat b = mean_p - a_r.mul(mean_I_r) - a_g.mul(mean_I_g) - a_b.mul(mean_I_b);
     
-//    cout << b <<endl;
     return (box_filter(a_r, r).mul(Ichannels[0])
             + box_filter(a_g, r).mul(Ichannels[1])
             + box_filter(a_b, r).mul(Ichannels[2])
@@ -575,7 +583,6 @@ void winner_take_all(vector<Mat> cost_result, Mat LF_I)
     cv::imshow("WIN_ta_BW_1 ", adjMap);
     cv::imshow("WIN_ta_CM_1", falseColorsMap);
     waitKey(45);
-    
 }
 
 vector< Mat > costAgg(vector< Mat > cost_result, Mat LF_I, cagg_params &param)
@@ -584,15 +591,33 @@ vector< Mat > costAgg(vector< Mat > cost_result, Mat LF_I, cagg_params &param)
     double eps  = param.eps;
     GuidedF GuidedF(LF_I, eps, r);
     for (int i=0 ; i < cost_result.size() ; i++){
+        /**** Guided filter ****/
         cost_result[i] = GuidedF.filter(cost_result[i]);
         
+        /**** Bilateral filter ****/
+        //Mat costslice;
+        //Mat costslice_r;
+        //cost_result[i].convertTo(costslice, CV_8U);
+        //bilateralFilter(costslice, costslice_r, 5, 15, 15);
+        //costslice_r.convertTo(cost_result[i], cost_result[i].type());
+        
+        /**** Domain Transform (Recursive Filter) ****/
         //cost_result[i] = domain_transform_f(cost_result[i], 60, 0.2, 3, LF_I);
     }
     
     return cost_result;
 }
 
-/***************************************************** GRAPH CUT **************************************************/
+
+/********************************* GRAPH CUT  *******************************************
+ * GRAPH CUT
+ * gco-v3.0: Multi-label optimization (http://vision.csd.uwo.ca/code/)
+ *
+ * [4] Fast Approximate Energy Minimization with Label Costs.
+ * A. Delong, A. Osokin, H. N. Isack, Y. Boykov. In CVPR, June 2010.
+ *
+ ***************************************************************************************/
+
 vector<double> vectorise_f(Mat mat)
 {
     arma::mat arma_mat  = convcv2arma(mat);
@@ -650,7 +675,6 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
         }
         ind++;
     }
-    
     // Data cost parameters
     double min                = 0.0;
     double max                = 0.0;
@@ -680,39 +704,7 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
             smooth[l1+l2*num_labels] = (int)smoothness(l1,l2);
         }
     }
-    
-    // Neighborhood parameters
-//    Mat hor_0 = guide_im.colRange(0, guide_im.cols-1 ).clone();
-//    Mat hor_1 = guide_im.colRange(1, guide_im.cols ).clone();
-//    Mat ver_0 = guide_im.rowRange(0, guide_im.rows-1).clone();
-//    Mat ver_1 = guide_im.rowRange(1, guide_im.rows).clone();
-//
-//    transform(hor_0, hor_0, Matx13d(1,1,1));
-//    transform(hor_1, hor_1, Matx13d(1,1,1));
-//    transform(ver_0, ver_0, Matx13d(1,1,1));
-//    transform(ver_1, ver_1, Matx13d(1,1,1));
-//
-//    Mat hor_w;
-//    absdiff(hor_0, hor_1, hor_w);
-//    minMaxLoc(hor_w, &min, &max);
-//    vector<double> hor_linespaced = line_space(0, max, numQuantiz);
-//    transpose(hor_w, hor_w);
-//    vector<double> hor_vect       = vectorise_f(hor_w);
-//    vector<int> q_hor_w           = quantiz(hor_vect ,hor_linespaced);
-//    auto biggest_h                = max_element(begin(q_hor_w), end(q_hor_w));
-//    subtract(*biggest_h, q_hor_w, q_hor_w);
-//    
-//    Mat vert_w ;
-//    absdiff(ver_0, ver_1, vert_w);
-//    minMaxLoc(vert_w, &min, &max);
-//    vector<double> vert_linespaced = line_space(0, max, numQuantiz);
-//    transpose(vert_w, vert_w);
-//    vector<double> vert_vect       = vectorise_f(vert_w);
-//    vector<int> q_vert_w           = quantiz(vert_vect ,vert_linespaced);
-//    auto biggest                   = max_element(begin(q_vert_w), end(q_vert_w));
-//    subtract(*biggest, q_vert_w, q_vert_w);
-//
-    
+  
     Mat hor_0 = guide_im.colRange(0, guide_im.cols-1 ).clone();
     Mat hor_1 = guide_im.colRange(1, guide_im.cols ).clone();
     Mat ver_0 = guide_im.rowRange(0, guide_im.rows-1).clone();
@@ -732,8 +724,7 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
     
     Mat hor_w = hor_sum[0] + hor_sum[1] + hor_sum[2];
     sqrt(hor_w, hor_w);
-   
-    //absdiff(hor_0, hor_1, hor_w);
+
     minMaxLoc(hor_w, &min, &max);
     vector<double> hor_linespaced = line_space(0, max, numQuantiz);
     transpose(hor_w, hor_w);
@@ -751,8 +742,6 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
     Mat vert_w = ver_sum[0] + ver_sum[1] + ver_sum[2];
     sqrt(vert_w, vert_w);
     
-   // Mat vert_w ;
-    //absdiff(ver_0, ver_1, vert_w);
     minMaxLoc(vert_w, &min, &max);
     vector<double> vert_linespaced = line_space(0, max, numQuantiz);
     transpose(vert_w, vert_w);
@@ -760,10 +749,6 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
     vector<int> q_vert_w           = quantiz(vert_vect ,vert_linespaced);
     auto biggest                   = max_element(begin(q_vert_w), end(q_vert_w));
     subtract(*biggest, q_vert_w, q_vert_w);
-    
-
-
-//    
 
     try{
         GCoptimizationGeneralGraph *gc = new GCoptimizationGeneralGraph(num_pixels,num_labels);
@@ -797,11 +782,9 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
         gc->expansion();// run expansion for 2 iterations. For swap use gc->swap(num_iterations);
         //gc->swap(2);
         printf("\nAfter optimization energy is %lld \n",gc->compute_energy());
-       
         for ( int  i = 0; i < num_pixels; i++ ) {
             result[i] = gc->whatLabel(i);
         }
-        
         delete gc;
     }
     catch (GCException e){
@@ -811,31 +794,17 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
     Mat ret_val = Mat(width,height,CV_32SC1, result).clone() ;
     transpose(ret_val, ret_val);
 
-    delete [] smooth ;
-    delete [] result;
-    delete [] data;
-    
-    double min_x;
-    double max_x;
-    cv::minMaxIdx(ret_val, &min_x, &max_x);
-    cv::Mat adjMap;
-    ret_val.convertTo(adjMap,CV_8UC1, 255 / (max_x-min_x), -min_x);
-    
-    cv::Mat falseColorsMap;
-    applyColorMap(adjMap, falseColorsMap, cv::COLORMAP_PARULA);
-    namedWindow( "GC_BW",CV_WINDOW_AUTOSIZE);
-    namedWindow( "GC_CM",CV_WINDOW_AUTOSIZE);
-    cv::imshow("GC_BW", adjMap);
-    cv::imshow("GC_CM", falseColorsMap);
-    waitKey(45);
-
     return ret_val;
 }
 
-/*********************************************** WMT **************************************************************/
+/*********************************************** WMT **********************************************
+ * Z Ma et al.,
+ * Constant Time Weighted Median Filtering for Stereo Matching and Beyond
+ * ICCV 2013
+ **************************************************************************************************/
+
 void weighted_median_f(Mat &refined_mat , Mat guide_im, wmf_params &param)
 {
-
     Mat dispImg = refined_mat.clone();
     
     const double eps = param.eps ;
@@ -850,10 +819,10 @@ void weighted_median_f(Mat &refined_mat , Mat guide_im, wmf_params &param)
     Mat dispImg_out = Mat::zeros(dispImg.rows,dispImg.cols, dispImg.type());
     
     GuidedF GuidedF(guide_im, eps, r);
-    
     for (int dis=0; dis < max ;dis++) {
 
         unfilter_im.setTo(1, dispImg == dis);
+        //Mat filtered_im = domain_transform_f(unfilter_im, 60, 0.2, 3, guide_im);
         Mat filtered_im =GuidedF.filter(unfilter_im);
         unfilter_im = 0;
         accum_im =  accum_im + filtered_im;
@@ -864,30 +833,19 @@ void weighted_median_f(Mat &refined_mat , Mat guide_im, wmf_params &param)
                     dispImg_out.at<int>(i,j) = dis;
             }
         };
-        
         cout << "MEDIAN FILT ... " << dis << " / " << max <<endl;
     }
     
     Mat adj_Map;
     dispImg_out.convertTo(adj_Map,CV_8UC1);
     medianBlur(adj_Map, refined_mat, 3);
-
-    double min_x;
-    double max_x;
-    cv::minMaxIdx(refined_mat, &min_x, &max_x);
-    cv::Mat adjMap;
-    refined_mat.convertTo(adjMap,CV_8UC1, 255 / (max_x-min_x), -min_x);
-    
-    cv::Mat falseColorsMap;
-    applyColorMap(adjMap, falseColorsMap, cv::COLORMAP_PARULA);
-    namedWindow( "MED_BW",CV_WINDOW_AUTOSIZE);
-    namedWindow( "MED_CM",CV_WINDOW_AUTOSIZE);
-    cv::imshow("MED_BW", adjMap);
-    cv::imshow("MED_CM", falseColorsMap);
-    waitKey(45);
 }
 
-/************************************** ITERATIVE REFINEMENT  ********************************************************/
+/*************************** ITERATIVE REFINEMENT  ******************************
+% 2010.06.14 Jaesik Park
+% implementation of Spatial-Depth Super Resolution for Range Images
+% CVPR 2007
+*********************************************************************************/
 
 vector<Mat> makeCostVolume(Mat &disp_I, double disp_max)
 {
@@ -897,23 +855,12 @@ vector<Mat> makeCostVolume(Mat &disp_I, double disp_max)
     Mat diff_depthDis;
     Mat temp = Mat(disp_I.rows, disp_I.cols, disp_I.type());
     
-//    for (int i =1; i<=disp_max; i++ ){
-//        subtract((double)i, disp_I, diff_depthDis);
-//        //cout << diff_depthDis <<endl;
-//        pow(diff_depthDis, 2 , diff_depthDis);
-//        cv::min(diff_depthDis, (double)eta*search_r, temp);
-//        //cout << temp <<endl;
-//        //costVol_out[i] = temp.clone();
-//        costVol_out[i-1].push_back(temp);
-//    }
-    
     for (int i =0; i< disp_max; i++ ){
         subtract((double)i, disp_I, diff_depthDis);
         pow(diff_depthDis, 2 , diff_depthDis);
         cv::min( (double)eta*search_r, diff_depthDis, temp);
         costVol_out[i].push_back(temp);
     }
-    
 
     return costVol_out;
 }
@@ -925,8 +872,10 @@ vector<Mat> WMF4IterRefine(vector<Mat> cost, Mat guide_im, double disp_max, doub
     for (int dis=0; dis < disp_max ;dis++) {
         //for (int i=0; i < cost.size(); i++){
             cost[dis] =GuidedF.filter(cost[dis]);
+//             cost[dis] = domain_transform_f(cost[dis], 60, 0.2, 3, guide_im);
         //}
     }
+    
     return cost;
 }
 
@@ -945,18 +894,6 @@ Mat selectMinimumCost(vector<Mat> cost, double disp_max)
             }
         }
     }
-    
-//    for (int dis=1; dis<= cost.size(); dis++) {
-//        for (int j=0; j< minmap.rows; j++){
-//            for (int k=0; k< minmap.cols; k++){
-//                if (cost[dis-1].at<double>(j,k) < minmap.at<double>(j,k)) {
-//                    minmap.at<double>(j,k) = cost[dis-1].at<double>(j,k);
-//                    dmap.at<double>(j,k) = (double)dis;
-//                }
-//            }
-//        }
-//    }
-    
     return dmap;
 }
 
@@ -971,14 +908,6 @@ Mat disp2Idx(Mat depth, double disp_max)
             }
         }
     }
-//    for (int dis= 1; dis <= disp_max; dis++){
-//        for (int i=0; i< depth.rows; i++){
-//            for (int j=0; j< depth.rows; j++){
-//                if (depth.at<double>(i,j) == dis)
-//                    idmap.at<double>(i,j) = (double) dis;
-//            }
-//        }
-//    }
     return idmap;
 }
 
@@ -1005,13 +934,6 @@ Mat subpixelRefinement(Mat dmap_h, vector<Mat> cost, double disp_max)
                     
                     depth_sub.at<double>(i,j) = (double)(dis) - (f_dp-f_dm)/(2.0*(f_dp+f_dm)-2.0*f_dc);
                 }
-//                if (idmap.at<double>(i,j) == (double)(dis+1)){
-//                    double f_dm= costslice_m.at<double>(i,j);
-//                    double f_dc= costslice_c.at<double>(i,j);
-//                    double f_dp= costslice_p.at<double>(i,j);
-//                    
-//                    depth_sub.at<double>(i,j) = (double)(dis+1) - (f_dp-f_dm)/(2.0*(f_dp+f_dm)-2.0*f_dc);
-//                }
             }
         }
     }
@@ -1023,7 +945,7 @@ void iter_refine(Mat &dispMap , Mat guide_im, ir_params &param)
     Mat disp_I;
     dispMap.convertTo(disp_I, CV_64FC1);
     
-    //disp_I = disp_I + 1;
+   // disp_I = disp_I + 1;
     double disp_min;
     double disp_max;
     minMaxLoc(disp_I, &disp_min, &disp_max);
@@ -1050,6 +972,24 @@ void iter_refine(Mat &dispMap , Mat guide_im, ir_params &param)
     dispMap = dmap_r.clone();
 }
 
+/************************************** MSD ***********************************************/
+
+void mean_square_diff (const Mat &im1 , const Mat &im2)
+{
+    size_t rows = im1.rows;
+    size_t cols = im1.cols;
+    Mat result;
+    absdiff(im1, im2, result);
+    pow(result, 2, result);
+    double err =sum(result)[0];
+    
+    double mse = err / (rows * cols);
+
+    cout << "Means Square Errors: " << mse <<endl;
+    
+}
+
+/************************************** MAIN ***********************************************/
 int main(int ac, char** av)
 {
     clock_t tStart;
@@ -1094,6 +1034,20 @@ int main(int ac, char** av)
     cv::imshow("FIN_BW", adjMap);
     cv::imshow("FIN_CM", falseColorsMap);
     waitKey();
-
+    
+    /* MEANS SQUARE DIFFERENCE */
+//    Mat im1 =imread("/Users/alwihusada/Desktop/Matlab_res/myimage_ir.png");
+//    Mat im1_bw;
+//    Mat im1_d;
+//    cvtColor( im1, im1_bw, CV_BGR2GRAY );
+//    im1_bw.convertTo(im1_d, CV_64F, 1.0/255.0);
+//    
+//    Mat im2 =imread("/Users/alwihusada/Desktop/C++_res/myimage_ir.png");
+//    Mat im2_bw;
+//    Mat im2_d;
+//    cvtColor( im2, im2_bw, CV_BGR2GRAY );
+//    im2_bw.convertTo(im2_d, CV_64FC1, 1.0/255.0);
+//
+//    mean_square_diff(im1_d, im2_d);
     return 0;
 }
