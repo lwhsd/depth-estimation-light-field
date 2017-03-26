@@ -20,7 +20,7 @@
 using namespace std;
 using namespace cv;
 
-#define IM_DIR "/Users/alwihusada/Desktop/Project/Datasets/medieval2/"
+#define IM_DIR "/Users/alwihusada/Desktop/Project/Datasets/flowers2/"
 #define IM_EXT "png"
 
 struct cv_params
@@ -190,7 +190,6 @@ Mat fft2(Mat src)
 
 Mat pixel_shift(Mat fft2,Mat src, vector<double> delta, int mode)
 {
- 
     const double phase = 2.0;
     Mat planes[]       = {Mat_<double>(src ), Mat::zeros(src.size(), CV_64F)};
     Mat kernel(fft2.rows, fft2.cols, CV_64F, Scalar::all(0));
@@ -320,7 +319,6 @@ vector< Mat > costVolume(vector< vector<Mat> > LF, cv_params &param)
                     abs_diff[i] = Ftarget[i] - gray_cen[i];
                     pow(abs_diff[i],2, abs_diff[i]);
                 }
-    
                 Mat color_src = abs_diff[0] + abs_diff[1] + abs_diff[2];
                 sqrt(color_src, color_src);
                 cv::min(color_src, (double)tau1, color_src);
@@ -345,7 +343,6 @@ vector< Mat > costVolume(vector< vector<Mat> > LF, cv_params &param)
                     abs_diff_gradY[i] = Ftarget_y[i] - gradY_cen_gray[i];
                     pow(abs_diff_gradY[i],2,abs_diff_gradY[i]);
                 }
-                
                 Mat color_gradY  = abs_diff_gradY[0] + abs_diff_gradY[1] + abs_diff_gradY[2];
                 sqrt(color_gradY, color_gradY);
                 cv::min(color_gradY, (double)tau2, color_gradY);
@@ -355,12 +352,11 @@ vector< Mat > costVolume(vector< vector<Mat> > LF, cv_params &param)
                  /*++++++++++++++ Cost VOLUME ++++++++++++++++++++++++++++++++*/
                 Mat grad_sum_temp =((1.0-alpha)*color_src) + (alpha*grad1);
                 cost_vol[cn-1]=grad_sum_temp;
-                
+            
                 if (flags[0] == 0 &&  flags[1] == 0)
                     cost_result[cn-1].push_back(cost_vol[cn-1]);
                 else
                     cost_result[cn-1] +=  cost_vol[cn-1];
-
             }
             cout << "COST VOLUME .... " << i*N+j <<" / "<<N*N-1<<endl;
 //            for(int i=0; i<numLabel; ++i)
@@ -431,7 +427,6 @@ Mat domain_transform_f(const Mat &I, double sigma_s, double sigma_r,int num_iter
     transpose(dVdy, dVdy);
     
     double sigma_H = sigma_s;
-    
     for (int i=0; i< num_iter; i++){
         double sigma_H_i =sigma_H * sqrt(3) * pow(2,(num_iter - (i + 1))) / sqrt(pow(4,num_iter )- 1);
         transformedDomain_recursive_f(im, dHdx, sigma_H_i);
@@ -464,7 +459,7 @@ private:
 static Mat box_filter(Mat mat_src, double r)
 {
     arma::mat arma_kernel = convcv2arma(mat_src);
-    arma::mat imDst(arma_kernel.n_cols,arma_kernel.n_rows);
+    arma::mat imDst(arma_kernel.n_rows, arma_kernel.n_cols);
     imDst.zeros();
     arma::mat imcum = arma::cumsum(arma_kernel);
     imDst.rows(0, r) = imcum.rows(r, 2*r);
@@ -474,15 +469,22 @@ static Mat box_filter(Mat mat_src, double r)
     imDst.cols(0,r) = imcum.cols(r,2*r);
     imDst.cols( r+1, arma_kernel.n_cols-1-r) = imcum.cols(2*r+1,arma_kernel.n_cols-1) - imcum.cols(0, (arma_kernel.n_cols-1)-2*r-1);
     imDst.cols(arma_kernel.n_cols-1-r+1,arma_kernel.n_cols-1) = repmat(imcum.col(arma_kernel.n_cols-1), 1, r) - imcum.cols( arma_kernel.n_cols-1-2*r,arma_kernel.n_cols-1-r-1);
+    arma::mat temp = imDst.t();
+    mat_src = convarma2cv(temp).clone();
     
-    mat_src = convarma2cv(imDst).clone();
     return mat_src;
 }
+
+//static cv::Mat boxfilter(const cv::Mat &I, int r)
+//{
+//    cv::Mat result;
+//    cv::blur(I, result, cv::Size(r, r));
+//    return result;
+//}
 
 GuidedF::GuidedF(Mat &guide_im, double eps, int r):eps(eps),r(r)
 {
     split(guide_im, Ichannels);
-    
     //N = Mat::zeros(guide_im.rows, guide_im.cols, CV_32SC1);
     Mat N_ones = Mat::ones(guide_im.rows, guide_im.cols, CV_64FC1);
     N = box_filter(N_ones, r);
@@ -525,9 +527,7 @@ Mat GuidedF::filter(const Mat &p)const
 {
     Mat dispI;
     p.convertTo(dispI,Ichannels[0].type() );
-    
     Mat mean_p = box_filter(dispI, r)/N;
-    
     Mat mean_Ip_r = box_filter(Ichannels[0].mul(dispI), r)/N;
     Mat mean_Ip_g = box_filter(Ichannels[1].mul(dispI), r)/N;
     Mat mean_Ip_b = box_filter(Ichannels[2].mul(dispI), r)/N;
@@ -592,6 +592,7 @@ vector< Mat > costAgg(vector< Mat > cost_result, Mat LF_I, cagg_params &param)
     GuidedF GuidedF(LF_I, eps, r);
     for (int i=0 ; i < cost_result.size() ; i++){
         /**** Guided filter ****/
+        Mat jk = cost_result[i] ;
         cost_result[i] = GuidedF.filter(cost_result[i]);
         
         /**** Bilateral filter ****/
@@ -604,10 +605,8 @@ vector< Mat > costAgg(vector< Mat > cost_result, Mat LF_I, cagg_params &param)
         /**** Domain Transform (Recursive Filter) ****/
         //cost_result[i] = domain_transform_f(cost_result[i], 60, 0.2, 3, LF_I);
     }
-    
     return cost_result;
 }
-
 
 /********************************* GRAPH CUT  *******************************************
  * GRAPH CUT
@@ -664,7 +663,6 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
     int numQuantiz = 3*num_labels;
    
     vector<double> vec_vect(num_pixels*num_labels);
-    
     Mat data_src = Mat(num_labels, width*height, CV_64F);;
     int ind = 0;
     for (int l = 0; l < num_labels; l++ ){
@@ -711,7 +709,6 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
     Mat ver_1 = guide_im.rowRange(1, guide_im.rows).clone();
     
     vector <Mat> hor_0gray, hor_1gray,hor_sum(3),ver_0gray, ver_1gray, ver_sum(3);
-    
     split(hor_0, hor_0gray);
     split(hor_1, hor_1gray);
     split(ver_0, ver_0gray);
@@ -733,12 +730,10 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
     auto biggest_h                = max_element(begin(q_hor_w), end(q_hor_w));
     subtract(*biggest_h, q_hor_w, q_hor_w);
     
-    
     for (int cn=0; cn < 3; cn++){
         ver_sum[cn] = ver_0gray[cn] - ver_1gray[cn];
         pow(ver_sum[cn], 2, ver_sum[cn]);
     }
-    
     Mat vert_w = ver_sum[0] + ver_sum[1] + ver_sum[2];
     sqrt(vert_w, vert_w);
     
@@ -766,7 +761,6 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
                 count++;
             }
         }
-
         // next set up vertical neighbors
         int count_v = 0;
         for (int y = 1; y < height; y++ ) {
@@ -777,7 +771,6 @@ Mat graphCuts(vector<Mat> img, Mat guide_im)
                 count_v++;
             }
         }
-        
         printf("\nBefore optimization energy is %lld",gc->compute_energy());
         gc->expansion();// run expansion for 2 iterations. For swap use gc->swap(num_iterations);
         //gc->swap(2);
@@ -944,7 +937,6 @@ void iter_refine(Mat &dispMap , Mat guide_im, ir_params &param)
 {
     Mat disp_I;
     dispMap.convertTo(disp_I, CV_64FC1);
-    
    // disp_I = disp_I + 1;
     double disp_min;
     double disp_max;
@@ -968,7 +960,6 @@ void iter_refine(Mat &dispMap , Mat guide_im, ir_params &param)
         
         cout << "ITER REFINE .... " << i <<" / "<<iternum<<endl;
     }
-    
     dispMap = dmap_r.clone();
 }
 
@@ -982,11 +973,9 @@ void mean_square_diff (const Mat &im1 , const Mat &im2)
     absdiff(im1, im2, result);
     pow(result, 2, result);
     double err =sum(result)[0];
-    
     double mse = err / (rows * cols);
 
     cout << "Means Square Errors: " << mse <<endl;
-    
 }
 
 /************************************** MAIN ***********************************************/
