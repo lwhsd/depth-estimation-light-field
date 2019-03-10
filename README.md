@@ -3,6 +3,7 @@ It's C++ implementation of Accurate Depth Map Estimation from a Lanslet Light Fi
 
 Jeon, Hae-Gon, et al. "Accurate depth map estimation from a lenslet light field camera." 
 Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition. 2015.
+(Original paper: https://www.cv-foundation.org/openaccess/content_cvpr_2015/papers/Jeon_Accurate_Depth_Map_2015_CVPR_paper.pdf)
 
 Original MATLAB code can be found here: ( https://sites.google.com/site/hgjeoncv/home/depthfromlf_cvpr15 )
 
